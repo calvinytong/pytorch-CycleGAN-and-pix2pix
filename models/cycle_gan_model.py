@@ -1,5 +1,4 @@
 import torch
-from collections import OrderedDict
 from torch.autograd import Variable
 import itertools
 from util.image_pool import ImagePool
@@ -13,6 +12,23 @@ class CycleGANModel(BaseModel):
 
     def initialize(self, opt):
         BaseModel.initialize(self, opt)
+
+        # specify the training losses you want to print out. The program will call base_model.get_current_losses
+        self.loss_names = ['D_A', 'G_A', 'cycle_A', 'idt_A', 'D_B', 'G_B', 'cycle_B', 'idt_B']
+        # specify the images you want to save/display. The program will call base_model.get_current_visuals
+        visual_names_A = ['real_A', 'fake_B', 'rec_A']
+        visual_names_B = ['real_B', 'fake_A', 'rec_B']
+        if self.isTrain and self.opt.lambda_identity > 0.0:
+            visual_names_A.append('idt_A')
+            visual_names_B.append('idt_B')
+
+        self.visual_names = visual_names_A + visual_names_B
+        # specify the models you want to save to the disk. The program will call base_model.save_networks and base_model.load_networks
+        if self.isTrain:
+            self.model_names = ['G_A', 'G_B', 'D_A', 'D_B']
+        else:  # during test time, only load Gs
+            self.model_names = ['G_A', 'G_B']
+
         # load/define networks
         # The naming conversion is different from those used in the paper
         # Code (paper): G_A (G), G_B (F), D_A (D_Y), D_B (D_X)
@@ -29,13 +45,6 @@ class CycleGANModel(BaseModel):
             self.netD_B = networks.define_D(opt.input_nc, opt.ndf,
                                             opt.which_model_netD,
                                             opt.n_layers_D, opt.norm, use_sigmoid, opt.init_type, self.gpu_ids)
-        if not self.isTrain or opt.continue_train:
-            which_epoch = opt.which_epoch
-            self.load_network(self.netG_A, 'G_A', which_epoch)
-            self.load_network(self.netG_B, 'G_B', which_epoch)
-            if self.isTrain:
-                self.load_network(self.netD_A, 'D_A', which_epoch)
-                self.load_network(self.netD_B, 'D_B', which_epoch)
 
         if self.isTrain:
             self.fake_A_pool = ImagePool(opt.pool_size)
@@ -47,7 +56,8 @@ class CycleGANModel(BaseModel):
             # initialize optimizers
             self.optimizer_G = torch.optim.Adam(itertools.chain(self.netG_A.parameters(), self.netG_B.parameters()),
                                                 lr=opt.lr, betas=(opt.beta1, 0.999))
-            self.optimizer_D = torch.optim.Adam(itertools.chain(self.netD_A.parameters(), self.netD_B.parameters()), lr=opt.lr, betas=(opt.beta1, 0.999))
+            self.optimizer_D = torch.optim.Adam(itertools.chain(self.netD_A.parameters(), self.netD_B.parameters()),
+                                                lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizers = []
             self.schedulers = []
             self.optimizers.append(self.optimizer_G)
@@ -55,13 +65,9 @@ class CycleGANModel(BaseModel):
             for optimizer in self.optimizers:
                 self.schedulers.append(networks.get_scheduler(optimizer, opt))
 
-        print('---------- Networks initialized -------------')
-        networks.print_network(self.netG_A, opt.verbose)
-        networks.print_network(self.netG_B, opt.verbose)
-        if self.isTrain:
-            networks.print_network(self.netD_A, opt.verbose)
-            networks.print_network(self.netD_B, opt.verbose)
-        print('-----------------------------------------------')
+        if not self.isTrain or opt.continue_train:
+            self.load_networks(opt.which_epoch)
+        self.print_networks(opt.verbose)
 
     def set_input(self, input):
         AtoB = self.opt.which_direction == 'AtoB'
@@ -86,10 +92,6 @@ class CycleGANModel(BaseModel):
         real_B = Variable(self.input_B, volatile=True)
         self.fake_A = self.netG_B(real_B)
         self.rec_B = self.netG_A(self.fake_A)
-
-    # get image paths
-    def get_image_paths(self):
-        return self.image_paths
 
     def backward_D_basic(self, netD, real, fake):
         # Real
@@ -159,25 +161,3 @@ class CycleGANModel(BaseModel):
         self.backward_D_A()
         self.backward_D_B()
         self.optimizer_D.step()
-
-    def get_current_errors(self):
-        ret_errors = OrderedDict([('D_A', self.loss_D_A), ('G_A', self.loss_G_A), ('Cyc_A', self.loss_cycle_A),
-                                  ('D_B', self.loss_D_B), ('G_B', self.loss_G_B), ('Cyc_B', self.loss_cycle_B)])
-        if self.opt.lambda_identity > 0.0:
-            ret_errors['idt_A'] = self.loss_idt_A
-            ret_errors['idt_B'] = self.loss_idt_B
-        return ret_errors
-
-    def get_current_visuals(self):
-        ret_visuals = OrderedDict([('real_A', self.real_A), ('fake_B', self.fake_B), ('rec_A', self.rec_A),
-                                   ('real_B', self.real_B), ('fake_A', self.fake_A), ('rec_B', self.rec_B)])
-        if self.opt.isTrain and self.opt.lambda_identity > 0.0:
-            ret_visuals['idt_A'] = self.idt_A
-            ret_visuals['idt_B'] = self.idt_B
-        return ret_visuals
-
-    def save(self, label):
-        self.save_network(self.netG_A, 'G_A', label, self.gpu_ids)
-        self.save_network(self.netD_A, 'D_A', label, self.gpu_ids)
-        self.save_network(self.netG_B, 'G_B', label, self.gpu_ids)
-        self.save_network(self.netD_B, 'D_B', label, self.gpu_ids)
